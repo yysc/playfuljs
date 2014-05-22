@@ -1,0 +1,182 @@
+<html>
+  <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+    <title>Constraint Physics Demo - PlayfulJS</title>
+  </head>
+  <body style='background: #000'>
+    <canvas id='display' width='1' height='1' />
+
+    <script>
+
+      function Particle(simulator, x, y) {
+        this.x = this.oldX = x;
+        this.y = this.oldY = y;
+        simulator.particles.push(this);
+      }
+
+      Particle.prototype.move = function(x, y) {
+        this.x += x;
+        this.y += y;
+      };
+
+      Particle.prototype.integrate = function() {
+        var dx = (this.x - this.oldX) * 0.999;
+        var dy = (this.y - this.oldY) * 0.999;
+        this.oldX = this.x;
+        this.oldY = this.y;
+        this.x += dx;
+        this.y += dy;
+      };
+
+      Particle.prototype.draw = function(ctx) {
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, 2, 0, Math.PI * 2);
+        ctx.fill();
+      };
+
+      function DistanceConstraint(simulator, fromParticle, toParticle, stiffness) {
+        this.particles = [fromParticle, toParticle];
+        this.stiffness = stiffness || 1;
+        this.targetDistance = this.solve(true);
+        simulator.constraints.push(this);
+      }
+
+      DistanceConstraint.prototype.solve = function(readOnly) {
+        var dx = this.particles[1].x - this.particles[0].x;
+        var dy = this.particles[1].y - this.particles[0].y;
+        var distance = Math.sqrt(dx * dx + dy * dy);
+        if (readOnly) return distance;
+
+        var correction = (distance - this.targetDistance) * this.stiffness * 0.5;
+        var total = Math.abs(dx) + Math.abs(dy);
+        var xCorrection = correction * dx / total;
+        var yCorrection = correction * dy / total;
+        
+        this.particles[0].move(xCorrection, yCorrection);
+        this.particles[1].move(-xCorrection, -yCorrection);
+      };
+
+      DistanceConstraint.prototype.draw = function(ctx) {
+        ctx.strokeStyle = '#ff0099';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(this.particles[0].x, this.particles[0].y);
+        ctx.lineTo(this.particles[1].x, this.particles[1].y);
+        ctx.stroke();
+      };
+
+      function PinConstraint(simulator, particle) {
+        this.particle = particle;
+        this.x = particle.x;
+        this.y = particle.y;
+        simulator.constraints.push(this);
+      }
+
+      PinConstraint.prototype.solve = function() {
+        this.particle.x = this.x;
+        this.particle.y = this.y;
+      };
+
+      PinConstraint.prototype.draw = function(ctx) {};
+
+      function Simulator(fps, accuracy) {
+        this.interval = 1000 / fps;
+        this.accuracy = accuracy;
+        this.particles = [];
+        this.constraints = [];
+        this.lastTime = 0;
+        this.timeAccumulator = 0;
+      }
+
+      Simulator.prototype.simulate = function() {
+        var now = Date.now();
+        var time = now - this.lastTime;
+        this.lastTime = now;
+        if (time > 300) return;
+
+        var steps = Math.floor(time / this.interval);
+        this.timeAccumulator += time % this.interval;
+        while (steps-- > 0) this.step();
+      };
+
+      Simulator.prototype.step = function() {
+        this.particles.forEach(function(particle) {
+          particle.move(0, 1);
+          particle.integrate();
+        });
+        for (var i = 0; i < this.accuracy; i++) {
+          this.constraints.forEach(function(constraint) {
+            constraint.solve();
+          });
+        }
+      };
+
+      Simulator.prototype.draw = function(ctx) {
+        this.constraints.forEach(function(constraint) { constraint.draw(ctx); });
+        this.particles.forEach(function(particle) { particle.draw(ctx); });
+      };
+
+      var display = document.getElementById('display');
+      var ctx = display.getContext('2d');
+      var width = display.width = window.innerWidth;
+      var height = display.height = window.innerHeight;
+
+      var sim = new Simulator(60, 200);
+
+      function Beam(sim, vertical, size, length) {
+        var top, bottom, lastTop, lastBottom;
+
+        for (var i = -size; i <= size; i++) {
+          top = new Particle(sim, width * 0.5 + i * length, height * vertical - length);
+          bottom = new Particle(sim, width * 0.5 + i * length, height * vertical);
+
+          new DistanceConstraint(sim, top, bottom);
+
+          if (lastTop && lastBottom) {
+            new DistanceConstraint(sim, lastTop, top);
+            new DistanceConstraint(sim, lastBottom, bottom);
+            new DistanceConstraint(sim, lastTop, bottom);
+            new DistanceConstraint(sim, lastBottom, top);
+          }
+
+          lastTop = top;
+          lastBottom = bottom;
+
+          if (i === -size) this.left = top;
+          if (i === size) this.right = top;
+        }
+      }
+
+      function Rope(sim, from, to, segments) {
+        var dx = (to.x - from.x) / segments;
+        var dy = (to.y - from.y) / segments;
+        var p = [from];
+        for (var i = 1; i < segments; i++) {
+          p[i] = new Particle(sim, from.x + i * dx, from.y + i * dy);
+          new DistanceConstraint(sim, p[p.length - 2], p[p.length - 1], 0.2);
+        }
+        new DistanceConstraint(sim, p[p.length - 1], to, 0.2);
+      }
+
+      var pin = new Particle(sim, width * 0.5, 10);
+      new PinConstraint(sim, pin);
+      var beam = new Beam(sim, 0.4, 4, 50);
+      var rope1 = new Rope(sim, pin, beam.left, 20);
+      var rope2 = new Rope(sim, pin, beam.right, 20);
+      var beam2 = new Beam(sim, 0.45, 3, 25);
+      var rope3 = new Rope(sim, beam.left, beam2.left, 10);
+      //var rope4 = new Rope(sim, beam.right, beam2.right, 10);
+
+      requestAnimationFrame(frame);
+
+      function frame() {
+        ctx.clearRect(0, 0, width, height);
+        sim.simulate();
+        sim.draw(ctx);
+        requestAnimationFrame(frame);
+      }
+
+    </script>
+  </body>
+</html>
